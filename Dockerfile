@@ -14,12 +14,13 @@ RUN apk add --no-cache \
     bash \
     ca-certificates \
     wget \
+    gcompat \
     && if [ "$HUGO_VERSION" = "latest" ]; then \
-        HUGO_LATEST=$(wget -qO- https://api.github.com/repos/gohugoio/hugo/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")' | sed 's/v//'); \
-        HUGO_VERSION=$HUGO_LATEST; \
+        HUGO_VERSION=$(wget -qO- https://api.github.com/repos/gohugoio/hugo/releases/latest | sed -n 's/.*"tag_name": "v\([^"]*\)".*/\1/p'); \
     fi \
     && wget -O hugo.tar.gz https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/').tar.gz \
     && tar -xzf hugo.tar.gz -C /usr/local/bin/ \
+    && chmod +x /usr/local/bin/hugo \
     && rm hugo.tar.gz \
     && hugo version
 
@@ -40,6 +41,7 @@ RUN apk add --no-cache \
     ca-certificates \
     jq \
     rsync \
+    gcompat \
     && adduser -D -s /bin/bash hugo
 
 # Copy Hugo binary from builder stage
