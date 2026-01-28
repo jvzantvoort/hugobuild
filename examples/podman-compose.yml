@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  hugo-builder:
+    image: ghcr.io/owner/hugo-builder:latest
+    container_name: hugo-site-builder-podman
+    environment:
+      - HUGO_VERSION=latest
+      - HUGO_BASEURL=https://example.com
+      - HUGO_ENVIRONMENT=production
+      - BUILD_DRAFTS=false
+      - MINIFY_OUTPUT=true
+      - EXTERNAL_CONTENT_REPOS=[{"url":"https://github.com/org/content.git","path":"external-content","branch":"main"}]
+    volumes:
+      - ./site:/workspace/src:rw,Z
+      - ./output:/workspace/output:rw,Z
+      - hugo_cache:/workspace/cache:rw,Z
+      - ./config:/workspace/config:ro,Z
+    userns_mode: "keep-id"
+    security_opt:
+      - "label=type:container_runtime_t"
+    command: ["build-site.sh"]
+    restart: "no"
+
+volumes:
+  hugo_cache:
+    driver: local
+
+# Podman-specific notes:
+# - The :Z suffix on volume mounts handles SELinux labeling
+# - userns_mode: "keep-id" maintains user ID mapping
+# - security_opt provides proper SELinux context
+# 
+# To run with podman-compose:
+# podman-compose -f podman-compose.yml up

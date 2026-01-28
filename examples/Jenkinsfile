@@ -1,0 +1,194 @@
+@Library('hugo-builder-lib') _
+
+pipeline {
+    agent { label 'podman' }
+    
+    parameters {
+        string(name: 'HUGO_VERSION', defaultValue: 'latest', description: 'Hugo version to use')
+        string(name: 'SITE_BASEURL', defaultValue: '', description: 'Site base URL')
+        string(name: 'BUILD_ENVIRONMENT', defaultValue: 'production', description: 'Build environment')
+        text(name: 'EXTERNAL_REPOS', defaultValue: '[]', description: 'External repositories JSON')
+        booleanParam(name: 'BUILD_DRAFTS', defaultValue: false, description: 'Include draft content')
+        booleanParam(name: 'CREATE_ARCHIVE', defaultValue: true, description: 'Create site archive')
+    }
+    
+    environment {
+        REGISTRY = 'ghcr.io'
+        IMAGE_NAME = 'owner/hugo-builder'
+        CONTAINER_NAME = "hugo-build-${BUILD_NUMBER}"
+    }
+    
+    stages {
+        stage('Prepare') {
+            steps {
+                script {
+                    // Clean up any existing containers
+                    sh """
+                        podman rm -f ${CONTAINER_NAME} || true
+                        mkdir -p output cache
+                    """
+                }
+            }
+        }
+        
+        stage('Pull Image') {
+            steps {
+                sh """
+                    podman pull ${REGISTRY}/${IMAGE_NAME}:hugo-${params.HUGO_VERSION}
+                """
+            }
+        }
+        
+        stage('Fetch External Content') {
+            when {
+                not { equals actual: params.EXTERNAL_REPOS, expected: '[]' }
+            }
+            steps {
+                sh """
+                    podman run --rm \
+                        --name ${CONTAINER_NAME}-fetch \
+                        -v \${PWD}/src:/workspace/src:rw,Z \
+                        -v \${PWD}/cache:/workspace/cache:rw,Z \
+                        -e EXTERNAL_CONTENT_REPOS='${params.EXTERNAL_REPOS}' \
+                        ${REGISTRY}/${IMAGE_NAME}:hugo-${params.HUGO_VERSION} \
+                        fetch-external-resources.sh
+                """
+            }
+        }
+        
+        stage('Build Site') {
+            steps {
+                sh """
+                    podman run --rm \
+                        --name ${CONTAINER_NAME} \
+                        -v \${PWD}/src:/workspace/src:rw,Z \
+                        -v \${PWD}/output:/workspace/output:rw,Z \
+                        -v \${PWD}/cache:/workspace/cache:rw,Z \
+                        -e HUGO_VERSION=${params.HUGO_VERSION} \
+                        -e HUGO_BASEURL='${params.SITE_BASEURL}' \
+                        -e HUGO_ENVIRONMENT=${params.BUILD_ENVIRONMENT} \
+                        -e BUILD_DRAFTS=${params.BUILD_DRAFTS} \
+                        -e MINIFY_OUTPUT=true \
+                        -e CREATE_ARCHIVE=${params.CREATE_ARCHIVE} \
+                        -e EXTERNAL_CONTENT_REPOS='${params.EXTERNAL_REPOS}' \
+                        ${REGISTRY}/${IMAGE_NAME}:hugo-${params.HUGO_VERSION}
+                """
+            }
+        }
+        
+        stage('Quality Checks') {
+            parallel {
+                stage('Validate HTML') {
+                    when {
+                        expression { fileExists('output/index.html') }
+                    }
+                    steps {
+                        sh """
+                            # Basic HTML validation
+                            if command -v tidy >/dev/null 2>&1; then
+                                find output -name "*.html" -exec tidy -q -e {} \\; || true
+                            fi
+                        """
+                    }
+                }
+                
+                stage('Check Links') {
+                    when {
+                        expression { fileExists('output/index.html') }
+                    }
+                    steps {
+                        sh """
+                            # Basic link checking (if available)
+                            if command -v linkchecker >/dev/null 2>&1; then
+                                linkchecker --check-extern output/index.html || true
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Archive Output') {
+            steps {
+                archiveArtifacts artifacts: 'output/**/*', allowEmptyArchive: false
+                
+                script {
+                    if (params.CREATE_ARCHIVE && fileExists('site-*.tar.gz')) {
+                        archiveArtifacts artifacts: 'site-*.tar.gz', allowEmptyArchive: false
+                    }
+                }
+            }
+        }
+        
+        stage('Publish HTML Report') {
+            steps {
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'output',
+                    reportFiles: 'index.html',
+                    reportName: 'Hugo Site Preview',
+                    reportTitles: 'Generated Site'
+                ])
+            }
+        }
+        
+        stage('Deploy') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                script {
+                    // Custom deployment logic
+                    sh """
+                        echo "Deploying to ${params.BUILD_ENVIRONMENT} environment..."
+                        # Add your deployment commands here
+                        # e.g., rsync, aws s3 sync, etc.
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                // Cleanup containers
+                sh """
+                    podman rm -f ${CONTAINER_NAME} ${CONTAINER_NAME}-fetch || true
+                """
+                
+                // Archive build info
+                if (fileExists('output/build-info.json')) {
+                    archiveArtifacts artifacts: 'output/build-info.json'
+                }
+            }
+        }
+        
+        success {
+            script {
+                def buildInfo = readJSON file: 'output/build-info.json'
+                
+                echo """
+                Build completed successfully!
+                - Environment: ${buildInfo.environment}
+                - Hugo Version: ${buildInfo.hugoVersion}
+                - Build Time: ${buildInfo.buildTime}
+                - Minified: ${buildInfo.minified}
+                """
+            }
+        }
+        
+        failure {
+            emailext(
+                subject: "Hugo Build Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: "Hugo site build failed. Check console output: ${env.BUILD_URL}",
+                to: "${env.CHANGE_AUTHOR_EMAIL ?: env.DEFAULT_RECIPIENTS}"
+            )
+        }
+    }
+}

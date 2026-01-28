@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          # Get the latest tag
+          CURRENT_TAG=$(git describe --tags --abbrev=0)
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 ${CURRENT_TAG}^)
+          
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+          
+          # Generate changelog
+          cat > CHANGELOG.md << EOF
+          # Changes in $CURRENT_TAG
+          
+          ## What's Changed
+          
+          EOF
+          
+          # Get commits since previous tag
+          git log --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${CURRENT_TAG} >> CHANGELOG.md
+          
+          echo "" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "## Container Images" >> CHANGELOG.md
+          echo "" >> CHANGELOG.md
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${CURRENT_TAG#v}\`" >> CHANGELOG.md
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:hugo-latest\`" >> CHANGELOG.md
+          echo "- \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest\`" >> CHANGELOG.md
+          
+          cat CHANGELOG.md
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.release-notes.outputs.current_tag }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  update-documentation:
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update README with latest version
+        run: |
+          # Get the latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          
+          # Update version references in README
+          if [ -f README.md ]; then
+            sed -i "s/hugo-builder:[^[:space:]]*/hugo-builder:${LATEST_TAG#v}/g" README.md
+            sed -i "s/hugo-builder:latest/hugo-builder:${LATEST_TAG#v}/g" README.md
+            
+            # Commit changes if any
+            if git diff --quiet README.md; then
+              echo "No changes to README.md"
+            else
+              git config --local user.email "action@github.com"
+              git config --local user.name "GitHub Action"
+              git add README.md
+              git commit -m "docs: update version references to ${LATEST_TAG}"
+              git push
+            fi
+          fi

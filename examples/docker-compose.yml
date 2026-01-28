@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  hugo-builder:
+    image: ghcr.io/owner/hugo-builder:latest
+    container_name: hugo-site-builder
+    environment:
+      - HUGO_VERSION=latest
+      - HUGO_BASEURL=https://example.com
+      - HUGO_ENVIRONMENT=production
+      - BUILD_DRAFTS=false
+      - MINIFY_OUTPUT=true
+      - CREATE_ARCHIVE=true
+      # External content repositories (JSON array)
+      - EXTERNAL_CONTENT_REPOS=[{"url":"https://github.com/org/content.git","path":"external-content","branch":"main"}]
+      # API endpoints for dynamic content (JSON array)
+      - CONTENT_API_ENDPOINTS=[{"url":"https://api.example.com/posts","output":"data/api-content.json","type":"json"}]
+    volumes:
+      # Mount your Hugo site source
+      - ./site:/workspace/src:rw
+      # Mount output directory
+      - ./output:/workspace/output:rw
+      # Mount cache directory for external resources
+      - hugo_cache:/workspace/cache:rw
+      # Mount configuration overrides (optional)
+      - ./config:/workspace/config:ro
+    networks:
+      - hugo-network
+    command: ["build-site.sh"]
+    restart: "no"
+    
+  # Optional: Local development server
+  hugo-server:
+    image: ghcr.io/owner/hugo-builder:latest
+    container_name: hugo-dev-server
+    environment:
+      - HUGO_ENVIRONMENT=development
+      - BUILD_DRAFTS=true
+    volumes:
+      - ./site:/workspace/src:rw
+      - hugo_cache:/workspace/cache:rw
+    ports:
+      - "1313:1313"
+    networks:
+      - hugo-network
+    command: ["bash", "-c", "cd /workspace/src && hugo server --bind 0.0.0.0 --port 1313 --buildDrafts --disableFastRender"]
+    restart: "unless-stopped"
+    
+  # Optional: File watcher for automatic rebuilds
+  hugo-watcher:
+    image: ghcr.io/owner/hugo-builder:latest
+    container_name: hugo-watcher
+    environment:
+      - HUGO_BASEURL=https://example.com
+      - HUGO_ENVIRONMENT=development
+      - BUILD_DRAFTS=true
+    volumes:
+      - ./site:/workspace/src:rw
+      - ./output:/workspace/output:rw
+      - hugo_cache:/workspace/cache:rw
+    networks:
+      - hugo-network
+    command: ["bash", "-c", "while inotifywait -r -e modify,create,delete /workspace/src; do echo 'Changes detected, rebuilding...'; build-site.sh; done"]
+    restart: "unless-stopped"
+
+volumes:
+  hugo_cache:
+    driver: local
+
+networks:
+  hugo-network:
+    driver: bridge
